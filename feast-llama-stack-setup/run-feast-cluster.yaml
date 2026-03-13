@@ -1,0 +1,85 @@
+version: 2
+distro_name: starter
+apis:
+- inference
+- vector_io
+- files
+- file_processors
+providers:
+  inference:
+  - provider_id: sentence-transformers
+    provider_type: inline::sentence-transformers
+    config:
+      trust_remote_code: true
+  vector_io:
+  - provider_id: feast
+    provider_type: inline::feast
+    config:
+      project: llama_stack_vectors
+      provider: local
+      registry:
+        registry_type: sql
+        path: postgresql+psycopg://feast:feast@postgres.feast.svc.cluster.local:5432/feast
+      online_store:
+        type: postgres
+        host: postgres.feast.svc.cluster.local
+        port: 5432
+        database: feast
+        db_schema: public
+        user: feast
+        password: feast
+        vector_enabled: true
+        sslmode: disable
+        similarity: cosine
+      offline_store:
+        type: postgres
+        host: postgres.feast.svc.cluster.local
+        port: 5432
+        database: feast
+        db_schema: public
+        user: feast
+        password: feast
+      entity_key_serialization_version: 3
+      persistence:
+        namespace: vector_io::feast
+        backend: kv_default
+  files:
+  - provider_id: builtin-files
+    provider_type: inline::localfs
+    config:
+      storage_dir: ${env.FILES_STORAGE_DIR:=~/.llama/distributions/starter/files}
+      metadata_store:
+        table_name: files_metadata
+        backend: sql_default
+  file_processors:
+  - provider_id: pypdf
+    provider_type: inline::pypdf
+storage:
+  backends:
+    kv_default:
+      type: kv_sqlite
+      db_path: ${env.SQLITE_STORE_DIR:=~/.llama/distributions/starter}/llama_stack.db
+    sql_default:
+      type: sql_sqlite
+      db_path: ${env.SQLITE_STORE_DIR:=~/.llama/distributions/starter}/llama_stack.db
+  stores:
+    metadata:
+      namespace: registry
+      backend: kv_default
+    inference:
+      table_name: inference_store
+      backend: sql_default
+registered_resources:
+  models: []
+  shields: []
+  vector_dbs: []
+  datasets: []
+  scoring_fns: []
+  benchmarks: []
+server:
+  port: 8321
+vector_stores:
+  default_provider_id: feast
+  default_embedding_model:
+    provider_id: sentence-transformers
+    model_id: nomic-ai/nomic-embed-text-v1.5
