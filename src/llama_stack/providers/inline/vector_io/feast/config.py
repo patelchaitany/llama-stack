@@ -12,6 +12,65 @@ from pydantic import BaseModel, Field, model_validator
 from llama_stack.core.storage.datatypes import KVStoreReference
 
 
+class FieldMapping(BaseModel):
+    """Maps llama-stack's internal field names to the actual field names in an existing Feast feature view."""
+
+    embedding: str = Field(
+        description="Name of the embedding/vector field in the Feast feature view",
+    )
+    chunk_id: str = Field(
+        description="Name of the entity/ID field in the Feast feature view",
+    )
+    chunk_text: str = Field(
+        description="Name of the text content field in the Feast feature view",
+    )
+    chunk_metadata: str | None = Field(
+        default=None,
+        description=(
+            "Name of the metadata field in the Feast feature view. If None, metadata defaults to empty for all chunks."
+        ),
+    )
+
+
+class ExistingFeatureViewConfig(BaseModel):
+    """Configuration for connecting to an existing Feast feature view as a read-only (or writable) vector store."""
+
+    feature_view_name: str = Field(
+        description="Name of the existing Feast feature view",
+    )
+    vector_store_id: str | None = Field(
+        default=None,
+        description="Vector store ID to expose in llama-stack. Defaults to feature_view_name.",
+    )
+    dimension: int = Field(
+        description="Embedding dimension of the vectors in this feature view",
+    )
+    field_mapping: FieldMapping = Field(
+        description="Maps llama-stack field names (embedding, chunk_id, chunk_text, chunk_metadata) to the actual field names in the existing Feast feature view",
+    )
+    read_only: bool = Field(
+        default=True,
+        description="If true, writes (insert/delete) are blocked. Recommended for externally managed feature views.",
+    )
+    distance_metric: str = Field(
+        default="cosine",
+        description="Distance metric for vector similarity search (e.g., 'cosine', 'l2', 'inner_product')",
+    )
+    write_defaults: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Default values for extra fields in the feature view when writing. "
+            "Only used when read_only is false. Keys are Feast field names, values are defaults."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_write_defaults(self) -> "ExistingFeatureViewConfig":
+        if self.write_defaults and self.read_only:
+            raise ValueError("write_defaults cannot be set when read_only is true")
+        return self
+
+
 class FeastVectorIOConfig(BaseModel):
     """Configuration for the Feast-backed VectorIO provider."""
 
@@ -47,6 +106,14 @@ class FeastVectorIOConfig(BaseModel):
     entity_key_serialization_version: int = Field(
         default=3,
         description="Feast entity key serialization version",
+    )
+    existing_feature_views: list[ExistingFeatureViewConfig] | None = Field(
+        default=None,
+        description=(
+            "List of existing Feast feature views to expose as vector stores. "
+            "Each entry maps an existing feature view's fields to llama-stack's expected schema. "
+            "These feature views must already exist in the Feast registry."
+        ),
     )
     persistence: KVStoreReference = Field(
         description="Config for KV store backend used by Llama Stack for metadata persistence",

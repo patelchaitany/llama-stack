@@ -119,13 +119,18 @@ RUN set -eux; \
 
 # Install the dependencies for the distribution
 # Explicitly unset UV index env vars to ensure we only use PyPI for distribution deps
+# When RUN_CONFIG_PATH is set, use it for dependency resolution so that providers
+# listed only in the run config (not in the default distro config) get installed.
 RUN set -eux; \
     unset UV_EXTRA_INDEX_URL UV_INDEX_STRATEGY; \
-    if [ -z "$DISTRO_NAME" ]; then \
-        echo "DISTRO_NAME must be provided" >&2; \
+    if [ -n "$RUN_CONFIG_PATH" ] && [ -f "$RUN_CONFIG_PATH" ]; then \
+        deps="$(llama stack list-deps "$RUN_CONFIG_PATH")"; \
+    elif [ -n "$DISTRO_NAME" ]; then \
+        deps="$(llama stack list-deps "$DISTRO_NAME")"; \
+    else \
+        echo "Either DISTRO_NAME or RUN_CONFIG_PATH must be provided" >&2; \
         exit 1; \
     fi; \
-    deps="$(llama stack list-deps "$DISTRO_NAME")"; \
     if [ -n "$deps" ]; then \
         printf '%s\n' "$deps" | xargs -L1 uv pip install --no-cache; \
     fi

@@ -45,7 +45,7 @@ from llama_stack_api import (
     VectorStoresProtocolPrivate,
 )
 
-from .config import FeastVectorIOConfig
+from .config import FeastVectorIOConfig, FieldMapping
 
 logger = get_logger(name=__name__, category="vector_io")
 
@@ -62,6 +62,10 @@ class FeastIndex(EmbeddingIndex):
     Each llama-stack VectorStore maps to a Feast FeatureView with a vector-indexed
     embedding field. Data is written via write_to_online_store() and queried via
     retrieve_online_documents_v2().
+
+    For existing (externally managed) feature views, a FieldMapping translates between
+    the Feast schema and llama-stack's internal field names. External feature views
+    are never deleted by llama-stack.
     """
 
     def __init__(
@@ -70,11 +74,48 @@ class FeastIndex(EmbeddingIndex):
         feature_view_name: str,
         dimension: int,
         distance_metric: str = "COSINE",
+        field_mapping: FieldMapping | None = None,
+        read_only: bool = False,
+        write_defaults: dict[str, Any] | None = None,
     ):
         self.feast_store = feast_store
         self.feature_view_name = feature_view_name
         self.dimension = dimension
         self.distance_metric = distance_metric
+        self.field_mapping = field_mapping
+        self.read_only = read_only
+        self.write_defaults = write_defaults
+        self.is_external = field_mapping is not None
+
+    @property
+    def _embedding_field(self) -> str:
+        return self.field_mapping.embedding if self.field_mapping else "embedding"
+
+    @property
+    def _chunk_id_field(self) -> str:
+        return self.field_mapping.chunk_id if self.field_mapping else "chunk_id"
+
+    @property
+    def _chunk_text_field(self) -> str:
+        return self.field_mapping.chunk_text if self.field_mapping else "chunk_text"
+
+    @property
+    def _chunk_metadata_field(self) -> str | None:
+        if self.field_mapping:
+            return self.field_mapping.chunk_metadata
+        return "chunk_metadata"
+
+    def _build_features(self) -> list[str]:
+        """Build the Feast feature list using mapped field names."""
+        fv = self.feature_view_name
+        features = [
+            f"{fv}:{self._embedding_field}",
+            f"{fv}:{self._chunk_text_field}",
+            f"{fv}:{self._chunk_id_field}",
+        ]
+        if self._chunk_metadata_field:
+            features.append(f"{fv}:{self._chunk_metadata_field}")
+        return features
 
     @classmethod
     def create(
@@ -144,6 +185,11 @@ class FeastIndex(EmbeddingIndex):
         )
 
     async def add_chunks(self, embedded_chunks: list[EmbeddedChunk], batch_size: int = 500) -> None:
+        if self.read_only:
+            raise PermissionError(
+                f"Failed to write to feature view '{self.feature_view_name}': it is configured as read-only"
+            )
+
         if not embedded_chunks:
             return
 
@@ -151,15 +197,19 @@ class FeastIndex(EmbeddingIndex):
         for chunk in embedded_chunks:
             content = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
             metadata_json = json.dumps(chunk.metadata) if chunk.metadata else "{}"
-            rows.append(
-                {
-                    "chunk_id": chunk.chunk_id,
-                    "chunk_text": content,
-                    "chunk_metadata": metadata_json,
-                    "embedding": list(chunk.embedding),
-                    "event_timestamp": datetime.now(tz=UTC),
-                }
-            )
+            row: dict[str, Any] = {
+                self._chunk_id_field: chunk.chunk_id,
+                self._chunk_text_field: content,
+                self._embedding_field: list(chunk.embedding),
+                "event_timestamp": datetime.now(tz=UTC),
+            }
+            if self._chunk_metadata_field:
+                row[self._chunk_metadata_field] = metadata_json
+            if self.write_defaults:
+                for key, value in self.write_defaults.items():
+                    if key not in row:
+                        row[key] = value
+            rows.append(row)
 
         df = pd.DataFrame(rows)
 
@@ -172,13 +222,7 @@ class FeastIndex(EmbeddingIndex):
         self, embedding: NDArray, k: int, score_threshold: float, filters: Any = None
     ) -> QueryChunksResponse:
         query_emb = embedding.tolist() if isinstance(embedding, np.ndarray) else list(embedding)
-        fv = self.feature_view_name
-        features = [
-            f"{fv}:embedding",
-            f"{fv}:chunk_text",
-            f"{fv}:chunk_metadata",
-            f"{fv}:chunk_id",
-        ]
+        features = self._build_features()
         distance_metric = self.distance_metric
 
         def _query():
@@ -195,13 +239,7 @@ class FeastIndex(EmbeddingIndex):
     async def query_keyword(
         self, query_string: str, k: int, score_threshold: float, filters: Any = None
     ) -> QueryChunksResponse:
-        fv = self.feature_view_name
-        features = [
-            f"{fv}:embedding",
-            f"{fv}:chunk_text",
-            f"{fv}:chunk_metadata",
-            f"{fv}:chunk_id",
-        ]
+        features = self._build_features()
 
         def _query():
             return self.feast_store.retrieve_online_documents_v2(
@@ -256,12 +294,23 @@ class FeastIndex(EmbeddingIndex):
         return QueryChunksResponse(chunks=chunks, scores=scores)
 
     async def delete_chunks(self, chunks_for_deletion: list[ChunkForDeletion]) -> None:
+        if self.read_only:
+            raise PermissionError(
+                f"Failed to delete chunks from feature view '{self.feature_view_name}': it is configured as read-only"
+            )
         raise NotImplementedError(
             "Feast does not support individual record deletion from the online store. "
             "To remove data, re-create the vector store."
         )
 
     async def delete(self) -> None:
+        if self.is_external:
+            logger.info(
+                "Skipping deletion of externally managed Feast feature view",
+                feature_view=self.feature_view_name,
+            )
+            return
+
         fv_name = self.feature_view_name
 
         def _teardown():
@@ -289,20 +338,23 @@ class FeastIndex(EmbeddingIndex):
             if similarity < score_threshold:
                 continue
 
-            embedding = row.get("embedding", [])
+            embedding = row.get(self._embedding_field, [])
             if embedding is None:
                 embedding = []
             embedding = list(embedding) if not isinstance(embedding, list) else embedding
 
-            metadata_str = row.get("chunk_metadata", "{}")
+            if self._chunk_metadata_field:
+                metadata_str = row.get(self._chunk_metadata_field, "{}")
+            else:
+                metadata_str = "{}"
             try:
                 metadata = json.loads(metadata_str) if isinstance(metadata_str, str) else {}
             except (json.JSONDecodeError, TypeError):
                 metadata = {}
 
             chunk_data = {
-                "content": row.get("chunk_text", ""),
-                "chunk_id": row.get("chunk_id", ""),
+                "content": row.get(self._chunk_text_field, ""),
+                "chunk_id": row.get(self._chunk_id_field, ""),
                 "metadata": metadata,
                 "chunk_metadata": {},
                 "embedding": embedding,
@@ -341,6 +393,7 @@ class FeastVectorIOAdapter(OpenAIVectorStoreMixin, VectorIO, VectorStoresProtoco
         self.cache: dict[str, VectorStoreWithIndex] = {}
         self.vector_store_table = None
         self.feast_store: FeatureStore | None = None
+        self._external_store_ids: set[str] = set()
 
     def _build_feast_store(self) -> FeatureStore:
         """Build a Feast FeatureStore from the provider config."""
@@ -366,11 +419,41 @@ class FeastVectorIOAdapter(OpenAIVectorStoreMixin, VectorIO, VectorStoresProtoco
         self.kvstore = await kvstore_impl(self.config.persistence)
         self.feast_store = self._build_feast_store()
 
+        if self.config.existing_feature_views:
+            for fv_config in self.config.existing_feature_views:
+                store_id = fv_config.vector_store_id or fv_config.feature_view_name
+                index = FeastIndex(
+                    feast_store=self.feast_store,
+                    feature_view_name=fv_config.feature_view_name,
+                    dimension=fv_config.dimension,
+                    distance_metric=fv_config.distance_metric,
+                    field_mapping=fv_config.field_mapping,
+                    read_only=fv_config.read_only,
+                    write_defaults=fv_config.write_defaults,
+                )
+                vector_store = VectorStore(
+                    identifier=store_id,
+                    provider_resource_id=fv_config.feature_view_name,
+                    provider_id="feast",
+                    embedding_model="unknown",
+                    embedding_dimension=fv_config.dimension,
+                )
+                self.cache[store_id] = VectorStoreWithIndex(vector_store, index, self.inference_api)
+                self._external_store_ids.add(store_id)
+                logger.info(
+                    "Registered existing Feast feature view as vector store",
+                    vector_store_id=store_id,
+                    feature_view=fv_config.feature_view_name,
+                    read_only=fv_config.read_only,
+                )
+
         start_key = VECTOR_DBS_PREFIX
         end_key = f"{VECTOR_DBS_PREFIX}\xff"
         stored_vector_stores = await self.kvstore.values_in_range(start_key, end_key)
         for db_json in stored_vector_stores:
             vector_store = VectorStore.model_validate_json(db_json)
+            if vector_store.identifier in self._external_store_ids:
+                continue
             feature_view_name = _sanitize_feast_name(vector_store.identifier)
             distance_metric = self.config.online_store.get(
                 "metric_type", self.config.online_store.get("similarity", "cosine")
@@ -394,6 +477,13 @@ class FeastVectorIOAdapter(OpenAIVectorStoreMixin, VectorIO, VectorStoresProtoco
     async def register_vector_store(self, vector_store: VectorStore) -> None:
         if self.kvstore is None or self.feast_store is None:
             raise RuntimeError("Not initialized. Call initialize() first.")
+
+        if vector_store.identifier in self._external_store_ids:
+            raise ValueError(
+                f"Failed to register vector store '{vector_store.identifier}': "
+                "it conflicts with an externally managed Feast feature view. "
+                "Remove it from the 'existing_feature_views' config to manage it through the API."
+            )
 
         key = f"{VECTOR_DBS_PREFIX}{vector_store.identifier}"
         await self.kvstore.set(key=key, value=vector_store.model_dump_json())
@@ -441,6 +531,13 @@ class FeastVectorIOAdapter(OpenAIVectorStoreMixin, VectorIO, VectorStoresProtoco
         return index
 
     async def unregister_vector_store(self, vector_store_id: str) -> None:
+        if vector_store_id in self._external_store_ids:
+            raise ValueError(
+                f"Failed to unregister vector store '{vector_store_id}': "
+                "it is an externally managed Feast feature view. "
+                "Remove it from the 'existing_feature_views' config instead."
+            )
+
         if vector_store_id in self.cache:
             await self.cache[vector_store_id].index.delete()
             del self.cache[vector_store_id]

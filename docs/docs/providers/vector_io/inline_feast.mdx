@@ -131,6 +131,7 @@ See [Feast's documentation](https://docs.feast.dev/) for more details about Feas
 | `registry` | `str \| dict[str, Any]` | No |  | Feast registry configuration. Either a path string for file-based registry (e.g., '/tmp/feast/registry.db') or a dict with registry_type, path, cache_ttl_seconds, etc. |
 | `offline_store` | `str \| dict[str, Any] \| None` | No | file | Feast offline store configuration. Not required for vector_io operations. Defaults to 'file' (local file-based). |
 | `entity_key_serialization_version` | `int` | No | 3 | Feast entity key serialization version |
+| `existing_feature_views` | `list[ExistingFeatureViewConfig] \| None` | No |  | List of existing Feast feature views to expose as vector stores. Each entry maps an existing feature view's fields to llama-stack's expected schema. These feature views must already exist in the Feast registry. |
 | `persistence` | `KVStoreReference` | No |  | Config for KV store backend used by Llama Stack for metadata persistence |
 | `persistence.namespace` | `str` | No |  | Key prefix for KVStore backends |
 | `persistence.backend` | `str` | No |  | Name of backend from storage.backends |
