@@ -14,6 +14,7 @@ from llama_stack.core.datatypes import (
     RoutableObjectWithProvider,
     RoutedProtocol,
     ScoringFnWithOwner,
+    VectorStoreWithOwner,
 )
 from llama_stack.core.request_headers import get_authenticated_user
 from llama_stack.core.store import DistributionRegistry
@@ -136,6 +137,8 @@ class CommonRoutingTableImpl(RoutingTable):
                 p.shield_store = self
             elif api == Api.vector_io:
                 p.vector_store_store = self
+                vector_stores = await p.list_vector_stores()
+                await add_objects(vector_stores, pid, VectorStoreWithOwner)
             elif api == Api.datasetio:
                 p.dataset_store = self
             elif api == Api.scoring:

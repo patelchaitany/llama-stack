@@ -52,6 +52,10 @@ class ExistingFeatureViewConfig(BaseModel):
         default=True,
         description="If true, writes (insert/delete) are blocked. Recommended for externally managed feature views.",
     )
+    embedding_model: str = Field(
+        default="unknown",
+        description="Identifier of the embedding model used to generate vectors in this feature view. Must match the registered_resources entry if one exists.",
+    )
     distance_metric: str = Field(
         default="cosine",
         description="Distance metric for vector similarity search (e.g., 'cosine', 'l2', 'inner_product')",

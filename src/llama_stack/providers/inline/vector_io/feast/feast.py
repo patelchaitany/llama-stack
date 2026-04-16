@@ -435,7 +435,7 @@ class FeastVectorIOAdapter(OpenAIVectorStoreMixin, VectorIO, VectorStoresProtoco
                     identifier=store_id,
                     provider_resource_id=fv_config.feature_view_name,
                     provider_id="feast",
-                    embedding_model="unknown",
+                    embedding_model=fv_config.embedding_model,
                     embedding_dimension=fv_config.dimension,
                 )
                 self.cache[store_id] = VectorStoreWithIndex(vector_store, index, self.inference_api)
@@ -479,11 +479,11 @@ class FeastVectorIOAdapter(OpenAIVectorStoreMixin, VectorIO, VectorStoresProtoco
             raise RuntimeError("Not initialized. Call initialize() first.")
 
         if vector_store.identifier in self._external_store_ids:
-            raise ValueError(
-                f"Failed to register vector store '{vector_store.identifier}': "
-                "it conflicts with an externally managed Feast feature view. "
-                "Remove it from the 'existing_feature_views' config to manage it through the API."
+            logger.info(
+                "Vector store already managed as existing feature view, skipping registration",
+                vector_store_id=vector_store.identifier,
             )
+            return
 
         key = f"{VECTOR_DBS_PREFIX}{vector_store.identifier}"
         await self.kvstore.set(key=key, value=vector_store.model_dump_json())
