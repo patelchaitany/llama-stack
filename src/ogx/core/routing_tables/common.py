@@ -13,6 +13,7 @@ from ogx.core.datatypes import (
     RoutableObject,
     RoutableObjectWithProvider,
     RoutedProtocol,
+    VectorStoreWithOwner,
 )
 from ogx.core.request_headers import get_authenticated_user
 from ogx.core.store import DistributionRegistry
@@ -115,7 +116,7 @@ class CommonRoutingTableImpl(RoutingTable):
                 await self.dist_registry.register(obj)
 
         # Register all objects from providers
-        for _pid, p in self.impls_by_provider_id.items():
+        for pid, p in self.impls_by_provider_id.items():
             api = get_impl_api(p)
             if api == Api.inference:
                 p.model_store = self
@@ -123,6 +124,8 @@ class CommonRoutingTableImpl(RoutingTable):
                 p.shield_store = self
             elif api == Api.vector_io:
                 p.vector_store_store = self
+                vector_stores = await p.list_vector_stores()
+                await add_objects(vector_stores, pid, VectorStoreWithOwner)
             elif api == Api.tool_runtime:
                 p.tool_store = self
 

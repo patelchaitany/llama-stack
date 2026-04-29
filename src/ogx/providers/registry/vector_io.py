@@ -827,6 +827,72 @@ For more details on TLS configuration, refer to the [TLS setup guide](https://mi
 Please refer to the remote provider documentation.
 """,
         ),
+        InlineProviderSpec(
+            api=Api.vector_io,
+            provider_type="inline::feast",
+            pip_packages=["feast[dev]", "pandas"] + DEFAULT_VECTOR_IO_DEPS,
+            module="ogx.providers.inline.vector_io.feast",
+            config_class="ogx.providers.inline.vector_io.feast.FeastVectorIOConfig",
+            api_dependencies=[Api.inference],
+            optional_api_dependencies=[Api.files, Api.models, Api.file_processors],
+            description="""
+[Feast](https://feast.dev/) is an open source feature store that can serve as a vector database
+provider for OGX. It supports multiple online store backends (Milvus, SQLite, pgvector,
+Qdrant, Elasticsearch) for vector storage and retrieval.
+
+## Features
+
+- Multiple online store backends (Milvus, SQLite, pgvector, Qdrant, Elasticsearch)
+- Vector similarity search via `retrieve_online_documents_v2`
+- Keyword/text search support
+- Flexible registry options (file-based, SQL-based)
+- Pass-through configuration for any Feast-supported backend
+
+## Search Modes
+
+**Supported:**
+- **Vector Search** (`mode="vector"`): Vector similarity search using embeddings
+- **Keyword Search** (`mode="keyword"`): Text-based search via Feast's query_string support
+- **Hybrid Search** (`mode="hybrid"`): Combines vector and keyword search with RRF/weighted reranking
+
+## Configuration
+
+The Feast provider uses pass-through configuration dicts for `online_store` and `registry`,
+allowing any Feast-supported backend to be used without code changes:
+
+```yaml
+vector_io:
+  - provider_id: feast
+    provider_type: inline::feast
+    config:
+      project: my_project
+      provider: local
+      registry: /tmp/feast/registry.db
+      online_store:
+        type: milvus
+        path: /tmp/feast/milvus.db
+        vector_enabled: true
+        embedding_dim: 384
+        metric_type: COSINE
+      persistence:
+        namespace: vector_io::feast
+        backend: kv_default
+```
+
+## Installation
+
+Install Feast with your chosen online store backend:
+
+```bash
+pip install feast            # base package (SQLite online store)
+pip install feast[milvus]    # Milvus backend
+pip install feast[postgres]  # pgvector backend
+```
+
+## Documentation
+See [Feast's documentation](https://docs.feast.dev/) for more details about Feast in general.
+""",
+        ),
         RemoteProviderSpec(
             api=Api.vector_io,
             adapter_type="elasticsearch",
